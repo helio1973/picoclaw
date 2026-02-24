@@ -19,11 +19,11 @@ RUN npm install --omit=dev && npm cache clean --force
 # Applicatie kopieren
 COPY . .
 
-# Non-root user
-RUN groupadd -g 1001 crawlee && \
-    useradd -u 1001 -g crawlee -m crawlee && \
-    chown -R crawlee:crawlee /app
-USER crawlee
+# Non-root user (use -f to ignore if GID/UID already exists in base image)
+RUN groupadd -f -g 1001 crawlee && \
+    useradd -u 1001 -g crawlee -m crawlee 2>/dev/null || true && \
+    chown -R 1001:1001 /app
+USER 1001
 
 RUN mkdir -p /app/storage
 
