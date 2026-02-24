@@ -26,8 +26,10 @@ RUN apk add --no-cache ca-certificates tzdata curl
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -q --spider http://localhost:18790/health || exit 1
 
-# Copy binary
+# Copy binary and entrypoint
 COPY --from=builder /src/build/picoclaw /usr/local/bin/picoclaw
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Create non-root user and group
 RUN addgroup -g 1000 picoclaw && \
@@ -36,8 +38,12 @@ RUN addgroup -g 1000 picoclaw && \
 # Switch to non-root user
 USER picoclaw
 
-# Run onboard to create initial directories and config
+# Run onboard to create initial directories, config, and skills
 RUN /usr/local/bin/picoclaw onboard
 
-ENTRYPOINT ["picoclaw"]
+# Preserve built-in skills separately so they survive volume mounts.
+# The entrypoint script syncs these into the workspace on startup.
+RUN cp -r /home/picoclaw/.picoclaw/workspace/skills /home/picoclaw/.picoclaw/_builtin_skills
+
+ENTRYPOINT ["entrypoint.sh"]
 CMD ["gateway"]

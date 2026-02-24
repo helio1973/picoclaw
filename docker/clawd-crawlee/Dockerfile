@@ -1,25 +1,20 @@
 # ============================================================
 # Clawd-Crawlee: Headless browser scraping service
-# Gebaseerd op Crawlee (Playwright) met een eenvoudige HTTP API
+# Uses Playwright's official minimal image with Chromium pre-installed.
 # ============================================================
-FROM node:22-bookworm-slim
+FROM mcr.microsoft.com/playwright:v1.50.0-noble
 
-# Playwright system dependencies + fonts voor CJK pagina's
+# curl voor healthcheck, fonts voor CJK pagina's
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    fonts-liberation \
     fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Package files kopieren en dependencies installeren
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
-
-# Playwright browsers installeren (alleen Chromium om ruimte te besparen)
-ENV PLAYWRIGHT_BROWSERS_PATH=/app/browsers
-RUN npx playwright install --with-deps chromium
+# Dependencies installeren en cache opruimen in één layer
+COPY package.json ./
+RUN npm install --omit=dev && npm cache clean --force
 
 # Applicatie kopieren
 COPY . .
@@ -30,7 +25,6 @@ RUN groupadd -g 1001 crawlee && \
     chown -R crawlee:crawlee /app
 USER crawlee
 
-# Storage directory voor Crawlee
 RUN mkdir -p /app/storage
 
 EXPOSE 3000

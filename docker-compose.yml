@@ -19,7 +19,7 @@ services:
       - ${MEMORY_VAULT_PATH:-./data/memory}:/home/picoclaw/.picoclaw/workspace/memory
     environment:
       - CRAWLEE_BASE_URL=http://clawd-crawlee:3000
-    entrypoint: ["picoclaw", "agent"]
+    command: ["agent"]
     stdin_open: true
     tty: true
 
