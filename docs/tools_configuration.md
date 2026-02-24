@@ -42,6 +42,28 @@ Web tools are used for web search and fetching.
 | `api_key` | string | - | Perplexity API key |
 | `max_results` | int | 5 | Maximum number of results |
 
+### Allowed Hosts (SSRF Allowlist)
+
+By default, `web_fetch` blocks requests to private/internal IP addresses to prevent SSRF attacks. When running in Docker, you may need to allow access to other containers on the same network.
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `allowed_hosts` | array | [] | Hostnames or IPs that bypass the private IP check |
+
+Metadata endpoints (`metadata.google.internal`) are **always** blocked, even if listed.
+
+```json
+{
+  "tools": {
+    "web": {
+      "allowed_hosts": ["clawd-crawlee", "ollama"]
+    }
+  }
+}
+```
+
+Environment variable: `PICOCLAW_TOOLS_WEB_ALLOWED_HOSTS=clawd-crawlee,ollama`
+
 ## Exec Tool
 
 The exec tool is used to execute shell commands.

@@ -464,7 +464,7 @@ func TestValidateURLSafety_MetadataEndpoints(t *testing.T) {
 }
 
 func TestWebFetch_SSRF_BlocksPrivateIP(t *testing.T) {
-	tool := NewWebFetchTool(50000) // SSRF check enabled (default)
+	tool := NewWebFetchTool(50000, nil) // SSRF check enabled (default)
 	ctx := context.Background()
 
 	result := tool.Execute(ctx, map[string]any{"url": "http://127.0.0.1:8080/"})
@@ -473,7 +473,104 @@ func TestWebFetch_SSRF_BlocksPrivateIP(t *testing.T) {
 }
 
 func TestWebFetch_SSRF_BlocksMetadata(t *testing.T) {
-	tool := NewWebFetchTool(50000)
+	tool := NewWebFetchTool(50000, nil)
+	ctx := context.Background()
+
+	result := tool.Execute(ctx, map[string]any{"url": "http://169.254.169.254/latest/meta-data"})
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.ForLLM, "blocked")
+}
+
+func TestValidateURLSafety_AllowedHosts(t *testing.T) {
+	tests := []struct {
+		name         string
+		urlStr       string
+		allowedHosts []string
+		wantError    bool
+	}{
+		{
+			name:         "allowed host bypasses private IP check",
+			urlStr:       "http://clawd-crawlee:3000/scrape",
+			allowedHosts: []string{"clawd-crawlee"},
+			wantError:    false,
+		},
+		{
+			name:         "allowed host with port",
+			urlStr:       "http://clawd-crawlee:3000/deep-scrape",
+			allowedHosts: []string{"clawd-crawlee"},
+			wantError:    false,
+		},
+		{
+			name:         "non-allowed private host still blocked",
+			urlStr:       "http://10.0.0.1/internal",
+			allowedHosts: []string{"clawd-crawlee"},
+			wantError:    true,
+		},
+		{
+			name:         "metadata endpoint never allowed",
+			urlStr:       "http://metadata.google.internal/computeMetadata/v1/",
+			allowedHosts: []string{"metadata.google.internal"},
+			wantError:    true,
+		},
+		{
+			name:         "empty allowlist does not change behavior",
+			urlStr:       "http://192.168.1.1/router",
+			allowedHosts: nil,
+			wantError:    true,
+		},
+		{
+			name:         "multiple allowed hosts",
+			urlStr:       "http://my-service:8080/api",
+			allowedHosts: []string{"clawd-crawlee", "my-service", "ollama"},
+			wantError:    false,
+		},
+		{
+			name:         "allowed direct private IP",
+			urlStr:       "http://172.18.0.3:3000/scrape",
+			allowedHosts: []string{"172.18.0.3"},
+			wantError:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, _ := url.Parse(tt.urlStr)
+			err := validateURLSafetyWithAllowlist(parsed, tt.allowedHosts)
+			if tt.wantError {
+				assert.Error(t, err, "expected block for %s", tt.urlStr)
+			} else {
+				assert.NoError(t, err, "expected allow for %s", tt.urlStr)
+			}
+		})
+	}
+}
+
+func TestWebFetch_AllowedHosts_Integration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok","pages":1}`))
+	}))
+	defer server.Close()
+
+	// Extract host from server URL
+	parsed, _ := url.Parse(server.URL)
+
+	tool := &WebFetchTool{
+		maxChars:     50000,
+		allowedHosts: []string{parsed.Hostname()},
+	}
+	ctx := context.Background()
+
+	result := tool.Execute(ctx, map[string]any{"url": server.URL})
+	assert.False(t, result.IsError, "allowed host should bypass SSRF: %s", result.ForLLM)
+	assert.Contains(t, result.ForUser, "ok")
+}
+
+func TestWebFetch_AllowedHosts_StillBlocksUnlisted(t *testing.T) {
+	tool := &WebFetchTool{
+		maxChars:     50000,
+		allowedHosts: []string{"clawd-crawlee"},
+	}
 	ctx := context.Background()
 
 	result := tool.Execute(ctx, map[string]any{"url": "http://169.254.169.254/latest/meta-data"})

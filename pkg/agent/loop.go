@@ -109,7 +109,7 @@ func registerSharedTools(
 		}); searchTool != nil {
 			agent.Tools.Register(searchTool)
 		}
-		agent.Tools.Register(tools.NewWebFetchTool(50000))
+		agent.Tools.Register(tools.NewWebFetchTool(50000, cfg.Tools.Web.AllowedHosts))
 
 		// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
 		agent.Tools.Register(tools.NewI2CTool())

@@ -439,10 +439,11 @@ type PerplexityConfig struct {
 }
 
 type WebToolsConfig struct {
-	Brave      BraveConfig      `json:"brave"`
-	Tavily     TavilyConfig     `json:"tavily"`
-	DuckDuckGo DuckDuckGoConfig `json:"duckduckgo"`
-	Perplexity PerplexityConfig `json:"perplexity"`
+	Brave        BraveConfig      `json:"brave"`
+	Tavily       TavilyConfig     `json:"tavily"`
+	DuckDuckGo   DuckDuckGoConfig `json:"duckduckgo"`
+	Perplexity   PerplexityConfig `json:"perplexity"`
+	AllowedHosts []string         `json:"allowed_hosts" env:"PICOCLAW_TOOLS_WEB_ALLOWED_HOSTS"` // Hosts that bypass SSRF private IP checks (e.g. Docker service names)
 }
 
 type CronToolsConfig struct {

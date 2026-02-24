@@ -51,10 +51,24 @@ func isPrivateIP(ip net.IP) bool {
 
 // validateURLSafety checks if a URL is safe to fetch (not targeting private infrastructure).
 func validateURLSafety(parsedURL *url.URL) error {
+	return validateURLSafetyWithAllowlist(parsedURL, nil)
+}
+
+// validateURLSafetyWithAllowlist checks URL safety but allows explicitly listed hosts
+// to bypass the private IP restriction. Metadata endpoints are always blocked.
+func validateURLSafetyWithAllowlist(parsedURL *url.URL, allowedHosts []string) error {
 	host := parsedURL.Hostname()
 
+	// Metadata endpoints are always blocked, even if in allowlist
 	if blockedHosts[host] {
 		return fmt.Errorf("blocked: metadata endpoint")
+	}
+
+	// Check if host is in the allowlist
+	for _, allowed := range allowedHosts {
+		if host == allowed {
+			return nil
+		}
 	}
 
 	// Check if host is a direct IP address
@@ -506,16 +520,27 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 
 type WebFetchTool struct {
 	maxChars      int
-	skipSSRFCheck bool // only for testing with httptest servers
+	skipSSRFCheck bool     // only for testing with httptest servers
+	allowedHosts  []string // hosts allowed to bypass SSRF private IP checks (e.g. Docker service names)
 }
 
-func NewWebFetchTool(maxChars int) *WebFetchTool {
+func NewWebFetchTool(maxChars int, allowedHosts []string) *WebFetchTool {
 	if maxChars <= 0 {
 		maxChars = 50000
 	}
 	return &WebFetchTool{
-		maxChars: maxChars,
+		maxChars:     maxChars,
+		allowedHosts: allowedHosts,
 	}
+}
+
+func (t *WebFetchTool) isHostAllowed(host string) bool {
+	for _, allowed := range t.allowedHosts {
+		if host == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *WebFetchTool) Name() string {
@@ -565,7 +590,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 
 	// SSRF protection: block private IPs and metadata endpoints
 	if !t.skipSSRFCheck {
-		if err := validateURLSafety(parsedURL); err != nil {
+		if err := validateURLSafetyWithAllowlist(parsedURL, t.allowedHosts); err != nil {
 			return ErrorResult(err.Error())
 		}
 	}
@@ -591,7 +616,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		TLSHandshakeTimeout: 15 * time.Second,
 	}
 	// DNS rebinding protection: verify resolved IPs at connection time
-	if !t.skipSSRFCheck {
+	if !t.skipSSRFCheck && !t.isHostAllowed(parsedURL.Hostname()) {
 		transport.DialContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {

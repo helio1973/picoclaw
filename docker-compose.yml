@@ -10,12 +10,15 @@ services:
     container_name: picoclaw-agent
     profiles:
       - agent
-    # Uncomment to access host network; leave commented unless needed.
-    #extra_hosts:
-    #  - "host.docker.internal:host-gateway"
+    networks:
+      - picoclaw-net
     volumes:
       - ./config/config.json:/home/picoclaw/.picoclaw/config.json:ro
       - picoclaw-workspace:/home/picoclaw/.picoclaw/workspace
+      # Memory vault: bind mount zodat het buiten de container beschikbaar is
+      - ${MEMORY_VAULT_PATH:-./data/memory}:/home/picoclaw/.picoclaw/workspace/memory
+    environment:
+      - CRAWLEE_BASE_URL=http://clawd-crawlee:3000
     entrypoint: ["picoclaw", "agent"]
     stdin_open: true
     tty: true
@@ -32,15 +35,48 @@ services:
     restart: unless-stopped
     profiles:
       - gateway
-    # Uncomment to access host network; leave commented unless needed.
-    #extra_hosts:
-    #  - "host.docker.internal:host-gateway"
+    networks:
+      - picoclaw-net
     volumes:
-      # Configuration file
       - ./config/config.json:/home/picoclaw/.picoclaw/config.json:ro
-      # Persistent workspace (sessions, memory, logs)
       - picoclaw-workspace:/home/picoclaw/.picoclaw/workspace
+      # Memory vault: bind mount zodat het buiten de container beschikbaar is
+      - ${MEMORY_VAULT_PATH:-./data/memory}:/home/picoclaw/.picoclaw/workspace/memory
+    environment:
+      - CRAWLEE_BASE_URL=http://clawd-crawlee:3000
     command: ["gateway"]
+
+  # ─────────────────────────────────────────────
+  # Clawd-Crawlee (Deep Scraper)
+  #   Headless browser scraping service
+  #   API: http://clawd-crawlee:3000
+  # ─────────────────────────────────────────────
+  clawd-crawlee:
+    build:
+      context: ./docker/clawd-crawlee
+      dockerfile: Dockerfile
+    container_name: clawd-crawlee
+    restart: unless-stopped
+    networks:
+      - picoclaw-net
+    ports:
+      # Optioneel: expose op host voor debugging
+      - "${CRAWLEE_HOST_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - MAX_CONCURRENCY=${CRAWLEE_MAX_CONCURRENCY:-5}
+      - REQUEST_TIMEOUT_MS=${CRAWLEE_REQUEST_TIMEOUT_MS:-60000}
+      - LOG_LEVEL=${CRAWLEE_LOG_LEVEL:-info}
+    volumes:
+      # Persistent storage voor crawl resultaten/cache
+      - crawlee-storage:/app/storage
+    # Chromium heeft shared memory nodig
+    shm_size: '1gb'
+
+networks:
+  picoclaw-net:
+    driver: bridge
 
 volumes:
   picoclaw-workspace:
+  crawlee-storage:

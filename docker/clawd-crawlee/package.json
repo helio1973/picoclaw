@@ -1,0 +1,14 @@
+{
+  "name": "clawd-crawlee",
+  "version": "1.0.0",
+  "description": "Deep scraper service for PicoClaw using Crawlee + Playwright",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "crawlee": "^3.12.0",
+    "playwright": "^1.50.0"
+  }
+}
