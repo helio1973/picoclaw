@@ -101,3 +101,59 @@ func TestView_NotReady(t *testing.T) {
 	view := m.View()
 	assert.Contains(t, view, "Initializing")
 }
+
+func TestStreamChunkMsg_FirstChunk(t *testing.T) {
+	m := NewModel(nil, "test:default")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.processing = true
+
+	updated, _ = m.Update(streamChunkMsg{chunk: "Hello"})
+	model := updated.(Model)
+	assert.True(t, model.processing, "should still be processing during stream")
+	assert.Len(t, model.messages, 1)
+	assert.Equal(t, "assistant", model.messages[0].Role)
+	assert.Equal(t, "Hello", model.messages[0].Content)
+}
+
+func TestStreamChunkMsg_AppendChunks(t *testing.T) {
+	m := NewModel(nil, "test:default")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.processing = true
+
+	updated, _ = m.Update(streamChunkMsg{chunk: "Hello "})
+	m = updated.(Model)
+	updated, _ = m.Update(streamChunkMsg{chunk: "World"})
+	model := updated.(Model)
+	assert.Len(t, model.messages, 1)
+	assert.Equal(t, "Hello World", model.messages[0].Content)
+}
+
+func TestStreamDoneMsg(t *testing.T) {
+	m := NewModel(nil, "test:default")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.processing = true
+	m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: "Done"})
+
+	updated, _ = m.Update(streamDoneMsg{})
+	model := updated.(Model)
+	assert.False(t, model.processing, "should stop processing after stream done")
+	assert.Nil(t, model.streamChan, "stream channel should be nil")
+}
+
+func TestListenForChunks(t *testing.T) {
+	ch := make(chan string, 2)
+	ch <- "chunk1"
+	close(ch)
+
+	cmd := listenForChunks(ch)
+	msg := cmd()
+	assert.Equal(t, streamChunkMsg{chunk: "chunk1"}, msg)
+
+	// Channel is closed, next read should return done
+	cmd = listenForChunks(ch)
+	msg = cmd()
+	assert.Equal(t, streamDoneMsg{}, msg)
+}

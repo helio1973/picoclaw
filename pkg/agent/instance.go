@@ -58,6 +58,24 @@ func NewAgentInstance(
 	toolsRegistry.Register(tools.NewGlobTool(workspace, restrict))
 	toolsRegistry.Register(tools.NewGrepTool(workspace, restrict))
 
+	// Git tools
+	if cfg == nil || cfg.Tools.Git.Enabled {
+		allowPush := cfg != nil && cfg.Tools.Git.AllowPush
+		toolsRegistry.Register(tools.NewGitStatusTool(workspace))
+		toolsRegistry.Register(tools.NewGitDiffTool(workspace))
+		toolsRegistry.Register(tools.NewGitLogTool(workspace))
+		toolsRegistry.Register(tools.NewGitShowTool(workspace))
+		toolsRegistry.Register(tools.NewGitBranchTool(workspace))
+		toolsRegistry.Register(tools.NewGitCommitTool(workspace))
+		toolsRegistry.Register(tools.NewGitAddTool(workspace))
+		toolsRegistry.Register(tools.NewGitResetTool(workspace))
+		toolsRegistry.Register(tools.NewGitCheckoutTool(workspace))
+		toolsRegistry.Register(tools.NewGitPullTool(workspace))
+		toolsRegistry.Register(tools.NewGitMergeTool(workspace))
+		toolsRegistry.Register(tools.NewGitStashTool(workspace))
+		toolsRegistry.Register(tools.NewGitPushTool(workspace, allowPush))
+	}
+
 	// Memory vault tools
 	memVault := memory.NewVault(filepath.Join(workspace, "memory"))
 	toolsRegistry.Register(tools.NewMemorySaveTool(memVault))

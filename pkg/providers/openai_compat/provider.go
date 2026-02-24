@@ -1,6 +1,7 @@
 package openai_compat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -227,6 +228,222 @@ func parseResponse(body []byte) (*LLMResponse, error) {
 		Usage:        apiResponse.Usage,
 	}, nil
 }
+
+// ChatStream implements StreamingLLMProvider via SSE (Server-Sent Events).
+// It streams text chunks via onChunk and returns the complete LLMResponse at the end.
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	onChunk func(chunk string),
+) (*LLMResponse, error) {
+	if p.apiBase == "" {
+		return nil, fmt.Errorf("API base not configured")
+	}
+
+	model = normalizeModel(model, p.apiBase)
+
+	requestBody := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+
+	if len(tools) > 0 {
+		requestBody["tools"] = tools
+		requestBody["tool_choice"] = "auto"
+	}
+
+	if maxTokens, ok := asInt(options["max_tokens"]); ok {
+		fieldName := p.maxTokensField
+		if fieldName == "" {
+			lowerModel := strings.ToLower(model)
+			if strings.Contains(lowerModel, "glm") || strings.Contains(lowerModel, "o1") ||
+				strings.Contains(lowerModel, "gpt-5") {
+				fieldName = "max_completion_tokens"
+			} else {
+				fieldName = "max_tokens"
+			}
+		}
+		requestBody[fieldName] = maxTokens
+	}
+
+	if temperature, ok := asFloat(options["temperature"]); ok {
+		lowerModel := strings.ToLower(model)
+		if strings.Contains(lowerModel, "kimi") && strings.Contains(lowerModel, "k2") {
+			requestBody["temperature"] = 1.0
+		} else {
+			requestBody["temperature"] = temperature
+		}
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed:\n  Status: %d\n  Body:   %s", resp.StatusCode, string(body))
+	}
+
+	return parseSSEStream(resp.Body, onChunk)
+}
+
+// parseSSEStream parses an SSE stream from an OpenAI-compatible API.
+func parseSSEStream(body io.Reader, onChunk func(chunk string)) (*LLMResponse, error) {
+	var content strings.Builder
+	var toolCalls []ToolCall
+	var finishReason string
+	var usage *UsageInfo
+
+	// Tool call assembly state: index → partial data
+	type toolState struct {
+		id       string
+		name     string
+		argsJSON strings.Builder
+	}
+	activeTools := make(map[int]*toolState)
+
+	scanner := newLineScanner(body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function *struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *UsageInfo `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		choice := chunk.Choices[0]
+
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+
+		if choice.Delta.Content != "" {
+			content.WriteString(choice.Delta.Content)
+			if onChunk != nil {
+				onChunk(choice.Delta.Content)
+			}
+		}
+
+		for _, tc := range choice.Delta.ToolCalls {
+			ts, exists := activeTools[tc.Index]
+			if !exists {
+				ts = &toolState{}
+				activeTools[tc.Index] = ts
+			}
+			if tc.ID != "" {
+				ts.id = tc.ID
+			}
+			if tc.Function != nil {
+				if tc.Function.Name != "" {
+					ts.name = tc.Function.Name
+				}
+				ts.argsJSON.WriteString(tc.Function.Arguments)
+			}
+		}
+	}
+
+	// Assemble final tool calls
+	for _, ts := range activeTools {
+		args := make(map[string]any)
+		raw := ts.argsJSON.String()
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				log.Printf("openai_compat: failed to decode streamed tool arguments for %q: %v", ts.name, err)
+				args = map[string]any{"raw": raw}
+			}
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        ts.id,
+			Name:      ts.name,
+			Arguments: args,
+		})
+	}
+
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
+	return &LLMResponse{
+		Content:      content.String(),
+		ToolCalls:    toolCalls,
+		FinishReason: finishReason,
+		Usage:        usage,
+	}, nil
+}
+
+// newLineScanner creates a buffered scanner that handles SSE line-based protocol.
+func newLineScanner(r io.Reader) *bufioScanner {
+	return &bufioScanner{scanner: newScanner(r)}
+}
+
+type bufioScanner struct {
+	scanner *bufio.Scanner
+}
+
+func newScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	return s
+}
+
+func (s *bufioScanner) Scan() bool { return s.scanner.Scan() }
+func (s *bufioScanner) Text() string { return s.scanner.Text() }
 
 func normalizeModel(model, apiBase string) string {
 	idx := strings.Index(model, "/")

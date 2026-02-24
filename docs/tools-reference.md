@@ -87,6 +87,41 @@ Always-on tools for persistent note storage in the memory vault.
 | `memory_search` | Search the vault by tags, title, or text | `query` (required) |
 | `memory_recall` | Read full note content by path or topic | `path` (required) |
 
+## Git Tools
+
+Native git tools for safe version control operations. Registered per-agent when `tools.git.enabled` is `true` (default).
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `git_status` | Show working tree status | — |
+| `git_diff` | Show changes | `staged` (bool), `file` (optional) |
+| `git_log` | Show commit history | `max_count` (default: 10), `oneline` (bool), `file` (optional) |
+| `git_show` | Show commit details | `ref` (default: HEAD) |
+| `git_branch` | List or create branches | `name` (optional, create), `list` (bool) |
+| `git_commit` | Create a commit | `message` (required), `files` (optional, auto-stage) |
+| `git_add` | Stage files | `files` (required) |
+| `git_reset` | Unstage files | `files` (optional, omit to unstage all) |
+| `git_checkout` | Switch branch or restore files | `ref` (required) |
+| `git_pull` | Pull changes from remote | `remote` (default: origin), `branch` (optional) |
+| `git_merge` | Merge a branch into the current branch | `branch` (required) |
+| `git_stash` | Stash changes (push, pop, list) | `action` (push/pop/list, default: push), `message` (optional, for push) |
+| `git_push` | Push to remote | `remote` (default: origin), `branch` (optional) |
+
+Configurable via `tools.git` in config:
+
+```json
+{
+  "tools": {
+    "git": {
+      "enabled": true,
+      "allow_push": false
+    }
+  }
+}
+```
+
+`git_push` is disabled by default. Set `allow_push: true` to enable. Destructive operations (`force push`, `reset --hard`, `clean -f`) are not available.
+
 ## Scheduling Tool
 
 | Tool | Description | Parameters |
@@ -132,6 +167,7 @@ Available on Linux for IoT/embedded use cases. Return errors on other platforms.
 |----------|-------------|-----------------|
 | Filesystem (`read_file`, `write_file`, `edit_file`, `append_file`, `list_dir`, `glob`, `grep`) | Per-agent (`instance.go`) | No |
 | Memory (`memory_save`, `memory_search`, `memory_recall`) | Per-agent (`instance.go`) | No |
+| Git (`git_status`, `git_diff`, `git_log`, `git_show`, `git_branch`, `git_commit`, `git_add`, `git_reset`, `git_checkout`, `git_push`) | Per-agent (`instance.go`) | Optional (`allow_push`) |
 | Shell (`exec`) | Per-agent (`instance.go`) | Optional deny patterns |
 | Web (`web_search`, `web_fetch`) | Shared (`loop.go`) | At least one search provider |
 | Sidecars (`deep_scrape`, `youtube_transcript`, `transcribe_audio`) | Shared (`loop.go`) | `enabled: true` + Docker service |

@@ -93,6 +93,129 @@ func (p *Provider) Chat(
 	return parseResponse(resp), nil
 }
 
+// ChatStream implements StreamingLLMProvider. It streams text chunks via
+// onChunk and returns the complete LLMResponse (including tool calls) at the end.
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	onChunk func(chunk string),
+) (*LLMResponse, error) {
+	var opts []option.RequestOption
+	if p.tokenSource != nil {
+		tok, err := p.tokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("refreshing token: %w", err)
+		}
+		opts = append(opts, option.WithAuthToken(tok))
+	}
+
+	params, err := buildParams(messages, tools, model, options)
+	if err != nil {
+		return nil, err
+	}
+
+	stream := p.client.Messages.NewStreaming(ctx, params, opts...)
+	defer stream.Close()
+
+	var content strings.Builder
+	var toolCalls []ToolCall
+	var usage *UsageInfo
+	finishReason := "stop"
+
+	// Track tool_use blocks being assembled from streamed JSON deltas.
+	type toolUseState struct {
+		id        string
+		name      string
+		inputJSON strings.Builder
+	}
+	activeTools := make(map[int64]*toolUseState)
+
+	for stream.Next() {
+		evt := stream.Current()
+
+		switch evt.Type {
+		case "content_block_start":
+			cb := evt.ContentBlock
+			if cb.Type == "tool_use" {
+				activeTools[evt.Index] = &toolUseState{
+					id:   cb.ID,
+					name: cb.Name,
+				}
+			}
+
+		case "content_block_delta":
+			delta := evt.Delta
+			switch delta.Type {
+			case "text_delta":
+				if delta.Text != "" {
+					content.WriteString(delta.Text)
+					if onChunk != nil {
+						onChunk(delta.Text)
+					}
+				}
+			case "input_json_delta":
+				if ts, ok := activeTools[evt.Index]; ok {
+					ts.inputJSON.WriteString(delta.PartialJSON)
+				}
+			}
+
+		case "content_block_stop":
+			if ts, ok := activeTools[evt.Index]; ok {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(ts.inputJSON.String()), &args); err != nil {
+					log.Printf("anthropic: failed to decode streamed tool input for %q: %v", ts.name, err)
+					args = map[string]any{"raw": ts.inputJSON.String()}
+				}
+				toolCalls = append(toolCalls, ToolCall{
+					ID:        ts.id,
+					Name:      ts.name,
+					Arguments: args,
+				})
+				delete(activeTools, evt.Index)
+			}
+
+		case "message_delta":
+			md := evt.AsMessageDelta()
+			switch md.Delta.StopReason {
+			case anthropic.StopReasonToolUse:
+				finishReason = "tool_calls"
+			case anthropic.StopReasonMaxTokens:
+				finishReason = "length"
+			case anthropic.StopReasonEndTurn:
+				finishReason = "stop"
+			}
+			usage = &UsageInfo{
+				CompletionTokens: int(md.Usage.OutputTokens),
+			}
+
+		case "message_start":
+			ms := evt.AsMessageStart()
+			if usage == nil {
+				usage = &UsageInfo{}
+			}
+			usage.PromptTokens = int(ms.Message.Usage.InputTokens)
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return nil, fmt.Errorf("claude streaming API call: %w", err)
+	}
+
+	if usage != nil {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+
+	return &LLMResponse{
+		Content:      content.String(),
+		ToolCalls:    toolCalls,
+		FinishReason: finishReason,
+		Usage:        usage,
+	}, nil
+}
+
 func (p *Provider) GetDefaultModel() string {
 	return "claude-sonnet-4.6"
 }

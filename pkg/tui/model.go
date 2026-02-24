@@ -17,6 +17,12 @@ type AgentProcessor interface {
 	ProcessDirect(ctx context.Context, input string, sessionKey string) (string, error)
 }
 
+// StreamingAgentProcessor extends AgentProcessor with streaming support.
+type StreamingAgentProcessor interface {
+	AgentProcessor
+	ProcessDirectStreaming(ctx context.Context, input string, sessionKey string, onChunk func(string)) (string, error)
+}
+
 // ChatMessage represents a single message in the conversation.
 type ChatMessage struct {
 	Role    string // "user", "assistant", "error"
@@ -29,16 +35,23 @@ type responseMsg struct {
 	err     error
 }
 
+// streamChunkMsg carries an incremental text chunk during streaming.
+type streamChunkMsg struct{ chunk string }
+
+// streamDoneMsg signals that streaming is complete.
+type streamDoneMsg struct{}
+
 // Model is the Bubble Tea model for the PicoClaw TUI.
 type Model struct {
 	agent      AgentProcessor
 	sessionKey string
 
-	messages   []ChatMessage
-	textarea   textarea.Model
-	viewport   viewport.Model
-	spinner    spinner.Model
-	processing bool
+	messages    []ChatMessage
+	textarea    textarea.Model
+	viewport    viewport.Model
+	spinner     spinner.Model
+	processing  bool
+	streamChan  <-chan string // active streaming channel (nil when not streaming)
 
 	width  int
 	height int
@@ -110,6 +123,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetWidth(msg.Width - 4)
 		return m, nil
 
+	case streamChunkMsg:
+		// Append chunk to the last assistant message (or create one)
+		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
+			m.messages[len(m.messages)-1].Content += msg.chunk
+		} else {
+			m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.chunk})
+		}
+		if m.ready {
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
+		// Continue listening for more chunks
+		return m, listenForChunks(m.streamChan)
+
+	case streamDoneMsg:
+		m.processing = false
+		m.streamChan = nil
+		m.textarea.Focus()
+		if m.ready {
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
+		return m, nil
+
 	case responseMsg:
 		m.processing = false
 		if msg.err != nil {
@@ -174,6 +211,25 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 	agent := m.agent
 	sessionKey := m.sessionKey
 
+	// Use streaming if available
+	if streamer, ok := agent.(StreamingAgentProcessor); ok {
+		chunks := make(chan string, 64)
+		m.streamChan = chunks
+
+		go func() {
+			defer close(chunks)
+			ctx := context.Background()
+			streamer.ProcessDirectStreaming(ctx, input, sessionKey, func(chunk string) {
+				chunks <- chunk
+			})
+		}()
+
+		return m, tea.Batch(
+			m.spinner.Tick,
+			listenForChunks(chunks),
+		)
+	}
+
 	return m, tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
@@ -185,6 +241,18 @@ func (m Model) sendMessage() (tea.Model, tea.Cmd) {
 			return responseMsg{content: response, err: err}
 		},
 	)
+}
+
+// listenForChunks returns a tea.Cmd that reads chunks from a channel.
+// Each chunk produces a streamChunkMsg; closing the channel produces streamDoneMsg.
+func listenForChunks(ch <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		chunk, ok := <-ch
+		if !ok {
+			return streamDoneMsg{}
+		}
+		return streamChunkMsg{chunk: chunk}
+	}
 }
 
 func (m Model) renderMessages() string {

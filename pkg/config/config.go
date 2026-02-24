@@ -483,8 +483,15 @@ type ToolsConfig struct {
 	Sidecars SidecarsConfig    `json:"sidecars"`
 	Cron     CronToolsConfig   `json:"cron"`
 	Exec     ExecConfig        `json:"exec"`
+	Git      GitToolsConfig    `json:"git"`
 	Skills   SkillsToolsConfig `json:"skills"`
 	Security SecurityConfig    `json:"security"`
+}
+
+// GitToolsConfig holds configuration for native git tools.
+type GitToolsConfig struct {
+	Enabled   bool `json:"enabled" env:"PICOCLAW_TOOLS_GIT_ENABLED"`
+	AllowPush bool `json:"allow_push" env:"PICOCLAW_TOOLS_GIT_ALLOW_PUSH"`
 }
 
 // SidecarsConfig holds configuration for Docker sidecar service tools.

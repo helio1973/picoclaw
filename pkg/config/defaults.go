@@ -279,6 +279,10 @@ func DefaultConfig() *Config {
 			Port: 18790,
 		},
 		Tools: ToolsConfig{
+			Git: GitToolsConfig{
+				Enabled:   true,
+				AllowPush: false,
+			},
 			Web: WebToolsConfig{
 				Brave: BraveConfig{
 					Enabled:    false,

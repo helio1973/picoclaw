@@ -30,6 +30,24 @@ type LLMProvider interface {
 	GetDefaultModel() string
 }
 
+// StreamCallback receives each text chunk as it arrives during streaming.
+type StreamCallback func(chunk string)
+
+// StreamingLLMProvider is an optional interface that providers can implement
+// to support streaming responses. ChatStream calls onChunk for each text
+// chunk and returns the complete LLMResponse at the end.
+type StreamingLLMProvider interface {
+	LLMProvider
+	ChatStream(
+		ctx context.Context,
+		messages []Message,
+		tools []ToolDefinition,
+		model string,
+		options map[string]any,
+		onChunk StreamCallback,
+	) (*LLMResponse, error)
+}
+
 // FailoverReason classifies why an LLM request failed for fallback decisions.
 type FailoverReason string
 
