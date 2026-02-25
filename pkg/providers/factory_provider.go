@@ -7,6 +7,7 @@ package providers
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -65,6 +66,8 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 	}
 
 	protocol, modelID := ExtractProtocol(cfg.Model)
+
+	log.Printf("[FACTORY] CreateProviderFromConfig: model=%q protocol=%q modelID=%q apiBase=%q", cfg.Model, protocol, modelID, cfg.APIBase)
 
 	switch protocol {
 	case "openai":
