@@ -8,7 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
@@ -182,8 +186,25 @@ func (c *SSHChannel) teaHandler(sess ssh.Session) (tea.Model, []tea.ProgramOptio
 	return model, []tea.ProgramOption{tea.WithAltScreen()}
 }
 
+// sshOutboundMsg carries a response delivered via the outbound channel.
+type sshOutboundMsg struct{ content string }
+
+// sshSessionClosedMsg signals that the outbound channel was closed.
+type sshSessionClosedMsg struct{}
+
+// listenOutbound returns a tea.Cmd that reads from the outbound channel.
+func listenOutbound(ch <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		content, ok := <-ch
+		if !ok {
+			return sshSessionClosedMsg{}
+		}
+		return sshOutboundMsg{content: content}
+	}
+}
+
 // sshModel is the Bubble Tea model for an SSH session.
-// It wraps the TUI chat components and connects to the MessageBus
+// It provides a full chat TUI and connects to the MessageBus
 // via the SSHChannel's HandleMessage/Send flow.
 type sshModel struct {
 	channel  *SSHChannel
@@ -193,37 +214,187 @@ type sshModel struct {
 	outChan  chan string
 	renderer *lipgloss.Renderer
 
-	// Embedded TUI state
-	tuiModel tui.Model
+	messages        []tui.ChatMessage
+	textarea        textarea.Model
+	viewport        viewport.Model
+	spinner         spinner.Model
+	processing      bool
+	width           int
+	height          int
+	ready           bool
+	glamourRenderer *glamour.TermRenderer
 }
 
 func newSSHModel(ch *SSHChannel, username, chatID string, styles tui.Styles, outChan chan string, renderer *lipgloss.Renderer) *sshModel {
+	ta := textarea.New()
+	ta.Placeholder = "Type your message... (Enter to send, Ctrl+C to quit)"
+	ta.Focus()
+	ta.CharLimit = 4096
+	ta.SetHeight(3)
+	ta.ShowLineNumbers = false
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = styles.Spinner
+
+	gr, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(80),
+	)
+
 	return &sshModel{
-		channel:  ch,
-		username: username,
-		chatID:   chatID,
-		styles:   styles,
-		outChan:  outChan,
-		renderer: renderer,
+		channel:         ch,
+		username:        username,
+		chatID:          chatID,
+		styles:          styles,
+		outChan:         outChan,
+		renderer:        renderer,
+		messages:        []tui.ChatMessage{},
+		textarea:        ta,
+		spinner:         sp,
+		glamourRenderer: gr,
 	}
 }
 
 func (m *sshModel) Init() tea.Cmd {
-	return nil
+	return tea.Batch(textarea.Blink, m.spinner.Tick, listenOutbound(m.outChan))
 }
 
 func (m *sshModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// TODO: implement full TUI update loop with MessageBus integration
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
+		switch msg.Type {
+		case tea.KeyCtrlC:
 			m.channel.unregisterSession(m.chatID)
 			return m, tea.Quit
+		case tea.KeyEnter:
+			if !m.processing {
+				return m.sendMessage()
+			}
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		headerHeight := 6 // textarea (3) + status (1) + padding (2)
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, msg.Height-headerHeight)
+			m.viewport.SetContent(m.renderMessages())
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - headerHeight
+		}
+		m.textarea.SetWidth(msg.Width - 4)
+		return m, nil
+
+	case sshOutboundMsg:
+		m.processing = false
+		m.messages = append(m.messages, tui.ChatMessage{
+			Role:    "assistant",
+			Content: msg.content,
+		})
+		if m.ready {
+			m.viewport.SetContent(m.renderMessages())
+			m.viewport.GotoBottom()
+		}
+		m.textarea.Focus()
+		return m, listenOutbound(m.outChan)
+
+	case sshSessionClosedMsg:
+		m.channel.unregisterSession(m.chatID)
+		return m, tea.Quit
+
+	case spinner.TickMsg:
+		if m.processing {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
 		}
 	}
-	return m, nil
+
+	// Update textarea when not processing
+	if !m.processing {
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
+	// Update viewport
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m *sshModel) sendMessage() (*sshModel, tea.Cmd) {
+	input := m.textarea.Value()
+	if input == "" {
+		return m, nil
+	}
+
+	m.messages = append(m.messages, tui.ChatMessage{
+		Role:    "user",
+		Content: input,
+	})
+	m.textarea.Reset()
+	m.processing = true
+
+	if m.ready {
+		m.viewport.SetContent(m.renderMessages())
+		m.viewport.GotoBottom()
+	}
+
+	// Publish to MessageBus via BaseChannel
+	m.channel.HandleMessage(m.username, m.chatID, input, nil, nil)
+
+	return m, m.spinner.Tick
+}
+
+func (m *sshModel) renderMessages() string {
+	if len(m.messages) == 0 {
+		return ""
+	}
+
+	var s string
+	for _, msg := range m.messages {
+		switch msg.Role {
+		case "user":
+			s += m.styles.User.Render("You: "+msg.Content) + "\n\n"
+		case "assistant":
+			rendered := msg.Content
+			if m.glamourRenderer != nil {
+				if r, err := m.glamourRenderer.Render(msg.Content); err == nil {
+					rendered = r
+				}
+			}
+			s += m.styles.Assistant.Render("Assistant:") + "\n" + rendered + "\n"
+		case "error":
+			s += m.styles.Error.Render(msg.Content) + "\n\n"
+		}
+	}
+	return s
 }
 
 func (m *sshModel) View() string {
-	return m.styles.Status.Render(fmt.Sprintf("SSH session: %s | Press q to quit", m.username))
+	if !m.ready {
+		return fmt.Sprintf("Connecting as %s...", m.username)
+	}
+
+	var status string
+	if m.processing {
+		status = m.styles.Status.Render(m.spinner.View() + " Thinking...")
+	} else {
+		status = m.styles.Status.Render("Ready | Ctrl+C to quit")
+	}
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.viewport.View(),
+		status,
+		m.textarea.View(),
+	)
 }
