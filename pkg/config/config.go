@@ -560,8 +560,20 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Clear default ModelList before unmarshaling to prevent Go's slice reuse
+	// from merging default struct values with user-provided entries.
+	// When json.Unmarshal appends to a slice with existing capacity, it reuses
+	// the underlying memory, leaving fields not present in the JSON unchanged.
+	defaultModelList := cfg.ModelList
+	cfg.ModelList = nil
+
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, err
+	}
+
+	// If user JSON didn't provide model_list, restore defaults
+	if cfg.ModelList == nil {
+		cfg.ModelList = defaultModelList
 	}
 
 	if err := env.Parse(cfg); err != nil {
