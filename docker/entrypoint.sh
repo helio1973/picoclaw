@@ -16,6 +16,11 @@ if [ -d "$SKILLS_SRC" ]; then
         if [ ! -d "$SKILLS_DST/$skill_name" ]; then
             cp -r "$skill_dir" "$SKILLS_DST/$skill_name"
             echo "Installed built-in skill: $skill_name"
+        else
+            # Always update SKILL.md from built-in to pick up metadata fixes
+            if [ -f "$skill_dir/SKILL.md" ]; then
+                cp "$skill_dir/SKILL.md" "$SKILLS_DST/$skill_name/SKILL.md"
+            fi
         fi
     done
 fi
