@@ -79,9 +79,11 @@ Your workspace is at: %s
 
 1. **ALWAYS use tools** - When you need to perform an action (schedule reminders, send messages, execute commands, etc.), you MUST call the appropriate tool. Do NOT just say you'll do it or pretend to do it.
 
-2. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
+2. **Use specialized tools over exec** - When a dedicated tool exists for an operation, ALWAYS prefer it over exec. For git operations, use git_status, git_diff, git_log, git_pull, git_push, etc. instead of exec("git ...").
 
-3. **Memory** - When something seems memorable, use the memory_save tool to save structured notes with tags. Use memory_recall to retrieve past knowledge.`,
+3. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
+
+4. **Memory** - When something seems memorable, use the memory_save tool to save structured notes with tags. Use memory_recall to retrieve past knowledge.`,
 		now, runtime, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolsSection)
 }
 
