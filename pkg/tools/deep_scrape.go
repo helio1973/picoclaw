@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // DeepScrapeTool scrapes web pages using a headless browser backend (Crawl4AI).
@@ -258,31 +260,69 @@ func (t *DeepScrapeTool) getJSON(ctx context.Context, url string) ([]byte, error
 	return body, nil
 }
 
+// extractMarkdownFromResult extracts markdown from a single result object.
+func extractMarkdownFromResult(result map[string]any) string {
+	// Try fit_markdown first (cleaner), then markdown, then markdown_v2.fit_markdown
+	if md, _ := result["fit_markdown"].(string); md != "" {
+		return md
+	}
+	if md, _ := result["markdown"].(string); md != "" {
+		return md
+	}
+	// Crawl4AI 0.8.x uses nested markdown_v2 structure
+	if mdv2, ok := result["markdown_v2"].(map[string]any); ok {
+		if md, _ := mdv2["fit_markdown"].(string); md != "" {
+			return md
+		}
+		if md, _ := mdv2["raw_markdown"].(string); md != "" {
+			return md
+		}
+	}
+	return ""
+}
+
 // extractMarkdownFromResults extracts markdown content from the Crawl4AI response.
-// It prefers fit_markdown over markdown, and concatenates results from multiple pages.
+// Handles multiple response formats across Crawl4AI versions:
+//   - "results": [...]  (array of result objects)
+//   - "result": {...}   (single result object)
+//   - top-level markdown fields (flat response)
 func extractMarkdownFromResults(resp map[string]any) string {
-	results, ok := resp["results"].([]any)
-	if !ok {
-		return ""
-	}
-
-	var parts []string
-	for _, r := range results {
-		result, ok := r.(map[string]any)
-		if !ok {
-			continue
+	// Format 1: "results" array (Crawl4AI <= 0.7.x)
+	if results, ok := resp["results"].([]any); ok {
+		var parts []string
+		for _, r := range results {
+			if result, ok := r.(map[string]any); ok {
+				if md := extractMarkdownFromResult(result); md != "" {
+					parts = append(parts, md)
+				}
+			}
 		}
-
-		md, _ := result["fit_markdown"].(string)
-		if md == "" {
-			md, _ = result["markdown"].(string)
-		}
-		if md != "" {
-			parts = append(parts, md)
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n\n---\n\n")
 		}
 	}
 
-	return strings.Join(parts, "\n\n---\n\n")
+	// Format 2: "result" singular object (Crawl4AI 0.8.x)
+	if result, ok := resp["result"].(map[string]any); ok {
+		if md := extractMarkdownFromResult(result); md != "" {
+			return md
+		}
+	}
+
+	// Format 3: top-level markdown fields (flat response)
+	if md := extractMarkdownFromResult(resp); md != "" {
+		return md
+	}
+
+	// Log the response keys for debugging when no content is found
+	keys := make([]string, 0, len(resp))
+	for k := range resp {
+		keys = append(keys, k)
+	}
+	logger.WarnCF("deep_scrape", "No markdown found in response",
+		map[string]any{"response_keys": keys})
+
+	return ""
 }
 
 // intFromArgs extracts an integer from args with a default value.
